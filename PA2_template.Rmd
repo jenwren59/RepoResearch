@@ -1,0 +1,364 @@
+---
+title: "Reproducible Research: Peer Assessment 2"
+author: "Jennifer White"
+output: 
+    html_document:
+    keep_md: true
+---
+# Analysis of National Weather Service Storm Data
+The purpose of this analysis is to use the National Weather Service Storm data to answer two questions:
+- Across the United States, which types of events are most harmful to population health?
+- Across the United States, which types of events have the greatest economic consequences?
+
+## Synopsis
+In order to complete this analysis, data and documentation were obtained from links provided on the class website. The documentation provided a list of 48 distinct event types with code designations. These designations were put in place in 1996. Thus, it was determined that the analysis would be based on events that occured from 1996 onwards in order to reliably incorporate these 48 event codes.
+
+Due to the complexity of the data and the scope of this assignment, durations of events were not considered in this analysis. While it is likely not to be true, each data record will be assumed to be independant and simple summaries will be performed to broadly answer the questions posed above.
+
+The two measures that will be used to summarize population health include fatalities and injuries; the two measures used to summarize economic consequences include crop damage and property damage.
+
+
+## Data Processing
+
+### Step one
+
+- First, load required libraries then obtain the data.
+
+```{r library}
+
+library(sqldf)
+library(Hmisc)
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(lubridate)
+library(xtable)
+
+Sys.info()
+
+```
+```{r getdata}
+if (!file.exists("projectdat")){
+        dir.create("projectdat")
+}
+urlname<-"https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+download.file(url=urlname, destfile="./projectdat/stormdata.csv.bz2")
+downLoaddate<-date()
+
+csvfile<-"./codelist.csv"
+filename<-"./projectdat/stormdata.csv.bz2"
+
+stormdat <- read.table(filename, comment.char = "#", 
+                  header = TRUE, sep = ",", na.strings = " ")
+
+stormdat$BDate<-as.Date(strptime(stormdat$BGN_DATE, "%m/%d/%Y"))
+analdat<-stormdat[stormdat$BDate >= as.Date("1996-01-01"),]
+str(analdat)
+
+```
+
+### Step Two
+
+I decided to copy the codelist into a CSV file and read it in. I will perform some careful string processing so that I can join the categories and their codes onto the actual data.
+
+```{r getcodelist }
+
+evtcode<-read.csv(csvfile, header=TRUE, sep=",")
+evtcode$EVTYPE_CD<-factor(evtcode$EVTYPE_CD)
+str(evtcode)
+
+search1<-str_trim(toupper(evtcode[,1]), side="both")
+search1<-gsub("\\s", "", search1)
+search1<-data.frame(gsub("[[:punct:]]", "", search1))
+namesearch<-c("newtype")
+names(search1)<-namesearch
+evtcode<-data.frame(cbind(evtcode,search1))
+
+evtcode<-evtcode[-c(25),]
+searchadd<-data.frame(matrix(c("Hurricane (Typhoon)", "Hurricane (Typhoon)", 
+                               "Z", "Z", "HURRICANE", "TYPHOON"), ncol=3, nrow=2))
+namesearch<-c("EVTYPE_CD", "CODE", "newtype")
+names(searchadd)<-namesearch
+
+finallist<-rbind(evtcode,searchadd)
+print(finallist,print.gap=1)
+
+rm(evtcode,namesearch, searchadd,search1)
+
+```
+
+### Step Three
+
+Next, I manipulate the format on the EVTYPE variable. I will match the first character sequence in this processed string variable to match with the labels on the code list. 
+
+```{r getstringmatch }
+
+newstring<-str_trim(toupper(analdat$EVTYPE), side="both")
+newstring<-gsub("\\s", "", newstring)
+newstring<-gsub("[[:punct:]]", "", newstring)
+
+newstring<-gsub(str_trim("TSTM", side="both"),str_trim("THUNDERSTORM", side="both"),newstring)
+analdat$newstring<-newstring
+rm(newstring)
+
+```
+
+### Step Four
+
+Create a function to attach the event type codes to the data. Check to make sure I have maintained unique levels for the REFNUM before joining the code back onto the entire data set. Here I also go ahead and assign a code of "UNK" to the uncoded records. I will investigate them but then will not retain them for the analysis.
+
+
+```{r datafunction }
+getsub<-function(num1){
+        mypattern<-as.character(finallist[num1,3])
+        mypattern<-str_trim(mypattern, side="both")
+        myfactor<-as.character(finallist[num1,1])
+        mycode<-as.character(finallist[num1,2])
+        
+        ## here is the trimming of the variable in the data base to
+        ## match the length in the codelist
+        analdat$new<-substr(analdat$newstring,1,str_length(mypattern))
+        
+        analdat$varn<-ifelse(str_detect(analdat$new,pattern=mypattern)==TRUE, 1,0)
+        if (sum(analdat$varn)==0) stop(paste("No observations of this type: ", mypattern))
+        
+        ## get data subset for one of the 48 types and attach the code to it
+        sub<-analdat[analdat$varn==1,]  
+        sub$CODE<-mycode
+        sub$EVTYPE_CD<-mypattern
+        sub$label<-myfactor
+      sub<-sub[,c("REFNUM","CODE","EVTYPE","newstring", "EVTYPE_CD", "label")]
+     
+     sub
+}
+
+sub_6<-getsub(6)
+numlist<-c(1:5,7:nrow(finallist))
+ for (i in numlist){
+    assign(paste("sub",i,sep="_"), getsub(i))
+    }
+
+ namelist<-c(noquote(paste("sub",numlist,sep="_")))
+ namelist<-lapply(namelist,get)               
+ mydat1<-do.call("rbind", namelist)
+
+ namelist2<-c(noquote(paste("sub",numlist,sep="_"))) 
+ rm(list=namelist2)
+ rm(namelist,namelist2,i)
+
+ str(mydat1)
+ describe(mydat1$REFNUM)
+ table(mydat1$label)
+
+ analdat<-merge(x=analdat, y=mydat1[,c(1,2,6)], by.x="REFNUM", by.y="REFNUM", all.x=TRUE) 
+
+ analdat$CODE[is.na(analdat$CODE)]<-"UNK"
+ analdat$label[is.na(analdat$label)]<-"Uncoded"
+
+ table(analdat$CODE,  useNA="always")
+ table(analdat$label, useNA="always")
+
+```
+
+### Step Five
+
+I will now perform appropriate trasformation for the crop and property damage. These are provided as a pair of variables: one has an actual value and the other is a units multiplier. In addition, I find that there are around 95% of records that have an actual value of 0 for both the crop and the poperty damage. Those records will not be evaluated.
+
+After more examination, these distributions of damage values are extremely skewed. Log transformations are applied so that plots may be produced.
+
+```{r datatransformations }
+
+analdat$pdamage<-ifelse(analdat$PROPDMGEXP=="B", analdat$PROPDMG*(1000000000), analdat$PROPDMG)
+analdat$pdamage<-ifelse(analdat$PROPDMGEXP=="M", analdat$PROPDMG*(1000000), analdat$pdamage)
+analdat$pdamage<-ifelse(analdat$PROPDMGEXP=="K", analdat$PROPDMG*(1000), analdat$pdamage)
+analdat$pdamage[analdat$pdamage==0]<-NA
+analdat$logpdam<-log(analdat$pdamage) 
+
+analdat$cdamage<-ifelse(analdat$CROPDMGEXP=="B", analdat$CROPDMG*(1000000000), analdat$CROPDMG)
+analdat$cdamage<-ifelse(analdat$CROPDMGEXP=="M", analdat$CROPDMG*(1000000), analdat$cdamage)
+analdat$cdamage<-ifelse(analdat$CROPDMGEXP=="K", analdat$CROPDMG*(1000), analdat$cdamage)
+analdat$cdamage[analdat$cdamage==0]<-NA
+analdat$logcdam<-log(analdat$cdamage) 
+
+analdat2<-analdat[analdat$CODE!="UNK",]
+
+
+```
+### Step Six
+
+Create a small function that gets tables of summary data for incidence rates. As stated in the synopsis, I will assume that fatalities and injuries are not double counted across events (data records). I willl create a simple average that represents a crude incidence rate of fatality and of injury per event. Those summary percentages will be compared to answer the first question.
+
+Before I go into the analysis, I will peek at data that includes the uncoded terms. I can see that there is a high fatality rate in that group. However, I will exclude that group since none of the event types got coded.
+
+```{r tablefunction1}
+
+gettable1<-function(dsin, groupvar, varsum, namelist){
+        totinc<-nrow(dsin)
+        sumvar<-data.frame(with(dsin, aggregate(varsum, list(groupvar),sum)))       
+        sumcounts<-data.frame(with(dsin, aggregate(varsum, list(groupvar),
+                                                      FUN=function(x){NROW(x)})))
+        rowperc<-data.frame(with(dsin, aggregate(varsum, list(groupvar),
+                                                      FUN=function(x){round(((NROW(x)/totinc)*100),digits=3)})))  
+        percent<-data.frame(with(dsin, aggregate(varsum, list(groupvar),
+                                                         FUN=function(x){round((sum(x)/NROW(x))*100, digits=2)})))
+        result<-data.frame(cbind(sumcounts,rowperc[,2],sumvar[,2],percent[,2])) 
+        names2<-namelist
+        names(result)<-names2
+  result      
+}
+result1<-gettable1(dsin=analdat, groupvar=analdat$CODE, varsum=analdat$FATALITIES,
+                   namelist=c("Group", "Total.Events", "%ofTotal", "Sum.Fatalities", "Fatality.Inc.Rate"))
+result1
+
+```
+
+## Results
+
+### Summary of Fatalities by Code and by Coded Event Type
+#### Fatalities by Code
+
+Shown below are the fatality incidence rates by the broad codes of "Z", "M", and "C". While only 12% of the total events are reported as type "Z", this group has the highest fatality incidence rate.
+
+```{r summary1}
+
+analdat2<-analdat[analdat$CODE!="UNK",]
+result1<-gettable1(dsin=analdat2, groupvar=analdat2$CODE, varsum=analdat2$FATALITIES,
+                   namelist=c("Group", "Total.Events", "%ofTotal", "Sum.Fatal", "Fatal.Inc.Rate"))
+print(result1,print.gap=1)
+```
+#### Fatalities by Coded Event Type
+
+Shown below are the fatality incidence rates by the 48 categories of coded event type. It is interesting to see the rare event of Tsunami with the highest fatality incidence rate followed by Excessive Heat.
+
+```{r summary1a}
+result2<-gettable1(dsin=analdat2, groupvar=analdat2$label, varsum=analdat2$FATALITIES,
+                   namelist=c("Group", "Tot.Events", "%ofTotal", "Sum.Fatal", "Fatal.Inc.Rate"))
+print(result2,print.gap=1)
+
+```
+
+### Summary of Injuries by Code and by Coded Event Type
+#### Injuries by Code
+
+Shown below are the injury incidence rates by the broad codes of "Z", "M", and "C". While only 12% of the total events are reported as type "Z", this group has the highest injury incidence rate.
+
+```{r summary2}
+
+result1a<-gettable1(dsin=analdat2, groupvar=analdat2$CODE, varsum=analdat2$INJURIES,
+                   namelist=c("Group", "Tot.Events", "%ofTotal", "Sum.Injury", "Injury.Inc.Rate"))
+print(result1a,pring.gap=1)
+```
+#### Injuries by Coded Event Type
+
+Shown below are the injury incidence rates by the 48 categories of coded event type. It is interesting to see the similar pattern for injuries as fatalities among the event types.
+
+```{r summary2a}
+result2a<-gettable1(dsin=analdat2, groupvar=analdat2$label, varsum=analdat2$INJURIES,
+                   namelist=c("Group", "Tot.Events", "%ofTotal", "Sum.Injury", "Injury.Inc.Rate"))
+print(result2a,print.gap=1)
+
+```
+
+### Plot of Fatality and Injury Incidence Rates
+
+Overall, the higher incidence of injuries and fatalities are among the events grouped into code Z.
+
+```{r barplot, fig.width=16, fig.height=8}
+result2<-result2%>%
+        mutate(inc=Fatal.Inc.Rate,type="Fatality")%>%
+        select(Group, inc, type)
+ 
+result2a<-result2a%>%
+        mutate(inc=Injury.Inc.Rate,type="Injury")%>%
+        select(Group, inc, type)
+
+trythis<-data.frame(rbind(result2, result2a))
+trythis<-merge(x=trythis, y=finallist[,c(1,2)], by.x="Group", by.y="EVTYPE_CD")
+
+trythis<-trythis%>%
+          arrange(type,Group)
+
+p<-ggplot(trythis, aes(y=trythis$inc, x=trythis$Group))+geom_bar(stat="identity", aes(fill=factor(trythis$CODE)))+facet_grid(type~.)+facet_wrap(~type, scales="free_y")
+p+labs(x=" ", y=expression("Incidence Rates"))+ggtitle("Incidence Rate by Event")+theme(axis.text.x = element_text(angle = 90, 
+        hjust = 1, vjust=0.5)) +theme(legend.title=element_blank())
+
+```
+
+
+## Summary of Crop and Property Damage 
+
+
+
+For both the crop and property damage, I will exclude events where no damage was reported. First, I create another simple table function to summarize the distribtions. Due to the highly skewed distributions, I will summarize using median, quartiles, and extreme values (min and max).
+
+```{r tablefunction2}
+gettable2<-function(dsin, groupvar, varsum, namelist){
+  dist<-data.frame(with(dsin, aggregate(varsum, list(groupvar), quantile, probs=seq(0,1,0.25), 
+                                               na.rm=TRUE, names=FALSE)))
+  sumcounts<-data.frame(with(dsin, aggregate(varsum, list(groupvar),
+                                           FUN=function(x){NROW(x)})))
+  dist<-format(dist, digits=0, scientific=FALSE, big.mark=",")
+  cd_all<-data.frame(cbind(sumcounts, dist[,c(2,3,4,5,6)]) )
+  namescd<-namelist
+  names(cd_all)<-namescd
+  cd_all
+}
+
+```
+### Summary of Crop Damage by Code and Coded Event Type
+
+From the tables and plots, there is much higher crop damage for events grouped into code "Z". The median in this code group is 200 million dollars with a maximum of 1.5 billion dollars. Excessive heat and hurricanes account for much of this.
+
+```{r summary3, set-options}
+options(width=160)
+
+analdat_c<-na.omit(analdat2[,c("REFNUM","CODE", "label", "cdamage", "logcdam")])
+
+cd<-gettable2(dsin=analdat_c, groupvar=analdat_c$CODE, varsum=analdat_c$cdamage, 
+              namelist=c("Group","Total.Events", "Min","Q1","Median","Q3","Max"))
+print(cd,print.gap=1)
+
+cd2<-gettable2(dsin=analdat_c, groupvar=analdat_c$label, varsum=analdat_c$cdamage, 
+              namelist=c("Group","Total.Events", "Min","Q1","Median","Q3","Max"))
+
+print(cd2, print.gap=1)
+
+```
+```{r histplotsc, fig.width=16, fig.height=8}
+
+t<-ggplot(analdat_c, aes(x=logcdam))+geom_histogram(binwidth=0.5, fill="royalblue")+facet_grid(.~CODE)+scale_x_continuous(limits=c(0,25), 
+                                                                                                                           breaks=seq(0,25,by=5))+facet_wrap(~CODE, scales="free_y")
+t+ggtitle("Crop Damage (log transformed)\n by Event Code")+labs(x="Crop damage (log tranhsformed)", y="Frequency")
+```
+### Summary of Property Damage by Code and Coded Event Type
+
+From the tables and plots, it is clear that there were a lot more events in code C but the median values were not dramatically different. This is not following the same pattern as crop damage. There is an apparent outlier for property damage in the code group of C and the event type of flood at 115 billion dollars. I am supposing this may be due to one major event: such as property damage due to flooding from hurricane Katrina (but I did not pursue it in the data to be certain). So, overall, it is not as clear here that one group of events has vastly more property damage.  
+
+```{r summary4, set-options}
+options(width=160)
+
+analdat_p<-na.omit(analdat2[,c("REFNUM","CODE", "label", "pdamage", "logpdam")])
+
+pd<-gettable2(dsin=analdat_p, groupvar=analdat_p$CODE, varsum=analdat_p$pdamage, 
+              namelist=c("Group","Total.Events", "Min","Q1","Median","Q3","Max"))
+print(pd, print.gap=1)
+pd2<-gettable2(dsin=analdat_p, groupvar=analdat_p$label, varsum=analdat_p$pdamage, 
+              namelist=c("Group","Total.Events", "Min","Q1","Median","Q3","Max"))
+
+print(pd2, print.gap=1)
+
+```
+```{r histplotsp, fig.width=14, fig.height=8}
+m<-ggplot(analdat_p, aes(x=logpdam))+geom_histogram(binwidth=0.5, fill="indianred4")+facet_grid(.~CODE)+scale_x_continuous(limits=c(0,25), breaks=seq(0,25,by=5))+facet_wrap(~CODE, scales="free_y")
+m+ggtitle("Property Damage (log transformed)\n by Event Code")+labs(x="Property damage (log transformed)", y="Frequency")
+```
+
+## Conclusions
+
+In conclusion:
+- There are higher incidences of fatality and injury in events that are grouped into code "Z". The rare event of Tsunami has a very high incidence of both fatality and injury. It was surprising to me to see very high rates associated with excessive heat. 
+- With respect to economic consequences, crop damage was definitely higher for events in the code type of "Z". This was a lower frequency of events reported but was associated with excessive heat and hurricanes. For propery damage, the difference was not as clear among the coded event types. There was one catastrophic event that made it appear that flooding (in code group "C") is the worst type of event.
+
+
+
